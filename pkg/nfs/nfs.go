@@ -50,6 +50,8 @@ const (
 	// The root directory is omitted from the string, for example:
 	//     "base" instead of "/base"
 	paramShare = "share"
+        paramUid = "uid"
+        paramGid = "gid"
 )
 
 var (

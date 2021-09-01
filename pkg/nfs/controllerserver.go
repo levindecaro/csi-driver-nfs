@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+        "strconv"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/net/context"
@@ -29,6 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"k8s.io/klog/v2"
+        "syscall"
 )
 
 // ControllerServer controller server setting
@@ -53,6 +55,10 @@ type nfsVolume struct {
 	subDir string
 	// size of volume
 	size int64
+        // Directory Group Owner
+        gid string
+        // Directory Uid Owner
+        uid string
 }
 
 // Ordering of elements in the CSI volume id.
@@ -100,10 +106,25 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	// Create subdirectory under base-dir
 	// TODO: revisit permissions
+        mask := syscall.Umask(0)
+        defer syscall.Umask(mask)
 	internalVolumePath := cs.getInternalVolumePath(nfsVol)
-	if err = os.Mkdir(internalVolumePath, 0777); err != nil && !os.IsExist(err) {
+        klog.V(2).Infof("Creating subdirectory at %v", internalVolumePath)
+	if err = os.Mkdir(internalVolumePath, 0770); err != nil && !os.IsExist(err) {
 		return nil, status.Errorf(codes.Internal, "failed to make subdirectory: %v", err.Error())
 	}
+
+        uid, _ := strconv.Atoi(nfsVol.uid)
+        gid, _ := strconv.Atoi(nfsVol.gid)
+
+        if uid != 0 && gid != 0 {
+          klog.V(2).Infof("Changing subdirectory ownership at %v", internalVolumePath)
+          err = syscall.Chown(internalVolumePath, uid, gid)
+          if err != nil {
+            return nil, status.Errorf(codes.Internal, "failed to chown subdirectory: %v", err.Error())
+          }
+        }
+
 	return &csi.CreateVolumeResponse{Volume: cs.nfsVolToCSI(nfsVol)}, nil
 }
 
@@ -276,6 +297,8 @@ func (cs *ControllerServer) newNFSVolume(name string, size int64, params map[str
 	var (
 		server  string
 		baseDir string
+                gid string
+                uid string
 	)
 
 	// Validate parameters (case-insensitive).
@@ -286,6 +309,10 @@ func (cs *ControllerServer) newNFSVolume(name string, size int64, params map[str
 			server = v
 		case paramShare:
 			baseDir = v
+                case paramUid:
+                        uid = v
+                case paramGid:
+                        gid = v
 		default:
 			return nil, fmt.Errorf("invalid parameter %q", k)
 		}
@@ -298,12 +325,20 @@ func (cs *ControllerServer) newNFSVolume(name string, size int64, params map[str
 	if baseDir == "" {
 		return nil, fmt.Errorf("%v is a required parameter", paramShare)
 	}
+        if uid == "" {
+                uid = "0"
+        }
+        if gid == "" {
+                gid = "0"
+        }
 
 	vol := &nfsVolume{
 		server:  server,
 		baseDir: baseDir,
 		subDir:  name,
 		size:    size,
+                uid:     uid,
+                gid:     gid,
 	}
 	vol.id = cs.getVolumeIDFromNfsVol(vol)
 
