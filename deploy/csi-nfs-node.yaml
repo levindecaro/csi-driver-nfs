@@ -19,6 +19,7 @@ spec:
       labels:
         app: csi-nfs-node
     spec:
+      serviceAccount: csi-nfs-controller-sa
       hostNetwork: true  # original nfs connection would be broken without hostNetwork setting
       dnsPolicy: ClusterFirstWithHostNet
       nodeSelector:
