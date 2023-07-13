@@ -12,15 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG ARCH=amd64
+#ARG ARCH=amd64
 
-FROM k8s.gcr.io/build-image/debian-base:buster-v1.6.0
+#FROM k8s.gcr.io/build-image/debian-base:buster-v1.6.0
+FROM centos:stream8
 
 # Copy nfsplugin from build _output directory
 COPY bin/nfsplugin /nfsplugin
 
 # this is a workaround to install nfs-common & nfs-kernel-server and don't quit with error
 # https://github.com/kubernetes-sigs/blob-csi-driver/issues/214#issuecomment-781602430
-RUN apt update && apt install ca-certificates mount nfs-common nfs-kernel-server -y || true
+#RUN apt update && apt install ca-certificates mount nfs-common nfs-kernel-server -y || true
+RUN dnf update -y && \
+    dnf install nfs-utils -y 
 
 ENTRYPOINT ["/nfsplugin"]
