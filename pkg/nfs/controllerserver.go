@@ -215,7 +215,14 @@ func (cs *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 }
 
 func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "")
+	volID := req.GetVolumeId()
+        volSize := req.GetCapacityRange().GetRequiredBytes()
+
+	if len(volID) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "ControllerExpandVolume volume ID missing in request")
+	}
+    	return &csi.ControllerExpandVolumeResponse{CapacityBytes: volSize, NodeExpansionRequired:  false}, nil
+
 }
 
 func (cs *ControllerServer) validateVolumeCapabilities(caps []*csi.VolumeCapability) error {

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+        "time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/net/context"
@@ -105,23 +106,21 @@ func (ns *NodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	if len(targetPath) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Target path missing in request")
 	}
-	notMnt, err := ns.mounter.IsLikelyNotMountPoint(targetPath)
 
+	klog.V(2).Infof("NodeUnpublishVolume: unmounting volume %s on %s", volumeID, targetPath)
+	var err error
+	extensiveMountPointCheck := true
+	forceUnmounter, ok := ns.mounter.(mount.MounterForceUnmounter)
+	if ok {
+		klog.V(2).Infof("force unmount %s on %s", volumeID, targetPath)
+		err = mount.CleanupMountWithForce(targetPath, forceUnmounter, extensiveMountPointCheck, 30*time.Second)
+	} else {
+		err = mount.CleanupMountPoint(targetPath, ns.mounter, extensiveMountPointCheck)
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, status.Error(codes.NotFound, "Targetpath not found")
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, "failed to unmount target %q: %v", targetPath, err)
 	}
-	if notMnt {
-		return nil, status.Error(codes.NotFound, "Volume not mounted")
-	}
-
-	klog.V(2).Infof("NodeUnpublishVolume: CleanupMountPoint %s on volumeID(%s)", targetPath, volumeID)
-	err = mount.CleanupMountPoint(targetPath, ns.mounter, false)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
+	klog.V(2).Infof("NodeUnpublishVolume: unmount volume %s on %s successfully", volumeID, targetPath)
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
@@ -218,7 +217,10 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 
 // NodeExpandVolume node expand volume
 func (ns *NodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "")
+
+	// return &csi.NodeExpandVolumeResponse{CapacityBytes: size}, nil
+	return &csi.NodeExpandVolumeResponse{}, nil
+
 }
 
 func makeDir(pathname string) error {

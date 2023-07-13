@@ -84,10 +84,12 @@ func NewNFSdriver(nodeID, driverName, endpoint string, perm *uint32) *Driver {
 	// ControllerServiceCapability RPC types.
 	n.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+                csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 	})
 
 	n.AddNodeServiceCapabilities([]csi.NodeServiceCapability_RPC_Type{
 		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
+                csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 		csi.NodeServiceCapability_RPC_UNKNOWN,
 	})
 	n.volumeLocks = NewVolumeLocks()
