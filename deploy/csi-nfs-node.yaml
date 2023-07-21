@@ -1,16 +1,10 @@
----
-# This YAML file contains driver-registrar & csi driver nodeplugin API objects
-# that are necessary to run CSI nodeplugin for nfs
-kind: DaemonSet
 apiVersion: apps/v1
+kind: DaemonSet
 metadata:
   name: csi-nfs-node
   namespace: kube-system
 spec:
-  updateStrategy:
-    rollingUpdate:
-      maxUnavailable: 1
-    type: RollingUpdate
+  revisionHistoryLimit: 10
   selector:
     matchLabels:
       app: csi-nfs-node
@@ -19,100 +13,162 @@ spec:
       labels:
         app: csi-nfs-node
     spec:
-      serviceAccount: csi-nfs-controller-sa
-      hostNetwork: true  # original nfs connection would be broken without hostNetwork setting
-      dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/os: linux
-      tolerations:
-        - operator: "Exists"
       containers:
-        - name: liveness-probe
-          image: k8s.gcr.io/sig-storage/livenessprobe:v2.3.0
-          args:
-            - --csi-address=/csi/csi.sock
-            - --probe-timeout=3s
-            - --health-port=29653
-            - --v=2
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-          resources:
-            limits:
-              cpu: 100m
-              memory: 100Mi
-            requests:
-              cpu: 10m
-              memory: 20Mi
-        - name: node-driver-registrar
-          image: k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.3.0
-          lifecycle:
-            preStop:
-              exec:
-                command: ["/bin/sh", "-c", "rm -rf /registration/csi-nfsplugin /registration/csi-nfsplugin-reg.sock"]
-          args:
-            - --v=2
-            - --csi-address=/csi/csi.sock
+      - args:
+        - --csi-address=/csi/csi.sock
+        - --probe-timeout=3s
+        - --health-port=29653
+        - --v=2
+        image: k8s.gcr.io/sig-storage/livenessprobe:v2.5.0
+        imagePullPolicy: IfNotPresent
+        name: liveness-probe
+        resources:
+          limits:
+            memory: 100Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /csi
+          name: socket-dir
+      - args:
+        - --v=2
+        - --csi-address=/csi/csi.sock
+        - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
+        env:
+        - name: DRIVER_REG_SOCK_PATH
+          value: /var/lib/kubelet/plugins/csi-nfsplugin/csi.sock
+        - name: KUBE_NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        image: k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.4.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          exec:
+            command:
+            - /csi-node-driver-registrar
             - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
-          env:
-            - name: DRIVER_REG_SOCK_PATH
-              value: /var/lib/kubelet/plugins/csi-nfsplugin/csi.sock
-            - name: KUBE_NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-            - name: registration-dir
-              mountPath: /registration
-        - name: nfs
-          securityContext:
-            privileged: true
-            capabilities:
-              add: ["SYS_ADMIN"]
-            allowPrivilegeEscalation: true
-          image: mcr.microsoft.com/k8s/csi/nfs-csi:latest
-          args:
-            - "-v=5"
-            - "--nodeid=$(NODE_ID)"
-            - "--endpoint=$(CSI_ENDPOINT)"
-          env:
-            - name: NODE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: CSI_ENDPOINT
-              value: unix:///csi/csi.sock
-          ports:
-            - containerPort: 29653
-              name: healthz
-              protocol: TCP
-          livenessProbe:
-            failureThreshold: 5
-            httpGet:
-              path: /healthz
-              port: healthz
-            initialDelaySeconds: 30
-            timeoutSeconds: 10
-            periodSeconds: 30
-          imagePullPolicy: "IfNotPresent"
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-            - name: pods-mount-dir
-              mountPath: /var/lib/kubelet/pods
-              mountPropagation: "Bidirectional"
-      volumes:
-        - name: socket-dir
-          hostPath:
-            path: /var/lib/kubelet/plugins/csi-nfsplugin
-            type: DirectoryOrCreate
-        - name: pods-mount-dir
-          hostPath:
-            path: /var/lib/kubelet/pods
-            type: Directory
-        - hostPath:
-            path: /var/lib/kubelet/plugins_registry
-            type: Directory
+            - --mode=kubelet-registration-probe
+          failureThreshold: 3
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 15
+        name: node-driver-registrar
+        resources:
+          limits:
+            memory: 100Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /csi
+          name: socket-dir
+        - mountPath: /registration
           name: registration-dir
+      - args:
+        - --csi-address=$(ADDRESS)
+        - --v=2
+        - --timeout=150s
+        - --leader-election
+        - --retry-interval-start=500ms
+        - --handle-volume-inuse-error=false
+        env:
+        - name: ADDRESS
+          value: unix:///csi/csi.sock
+        image: registry.k8s.io/sig-storage/csi-resizer:v1.8.0
+        imagePullPolicy: IfNotPresent
+        name: csi-resizer
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /csi
+          name: socket-dir
+      - args:
+        - -v=2
+        - --nodeid=$(NODE_ID)
+        - --endpoint=$(CSI_ENDPOINT)
+        env:
+        - name: NODE_ID
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        - name: CSI_ENDPOINT
+          value: unix:///csi/csi.sock
+        image: docker.io/levindecaro/csi-driver-nfs-custom:v0.2.14
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /healthz
+            port: healthz
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 10
+        name: nfs
+        ports:
+        - containerPort: 29653
+          hostPort: 29653
+          name: healthz
+          protocol: TCP
+        resources:
+          limits:
+            memory: 300Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        securityContext:
+          allowPrivilegeEscalation: true
+          capabilities:
+            add:
+            - SYS_ADMIN
+          privileged: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /csi
+          name: socket-dir
+        - mountPath: /var/lib/kubelet/pods
+          mountPropagation: Bidirectional
+          name: pods-mount-dir
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      nodeSelector:
+        hasStorageBackend: "true"
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: csi-nfs-controller-sa
+      serviceAccountName: csi-nfs-controller-sa
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - operator: Exists
+      volumes:
+      - hostPath:
+          path: /var/lib/kubelet/plugins/csi-nfsplugin
+          type: DirectoryOrCreate
+        name: socket-dir
+      - hostPath:
+          path: /var/lib/kubelet/pods
+          type: Directory
+        name: pods-mount-dir
+      - hostPath:
+          path: /var/lib/kubelet/plugins_registry
+          type: Directory
+        name: registration-dir
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
