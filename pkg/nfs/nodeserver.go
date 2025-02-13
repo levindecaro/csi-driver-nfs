@@ -20,12 +20,17 @@ import (
 	"fmt"
 	"os"
 	"strings"
-        "time"
+	"time"
+
+	"strconv"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume"
 	mount "k8s.io/mount-utils"
@@ -37,8 +42,73 @@ type NodeServer struct {
 	mounter mount.Interface
 }
 
+func contains(slice []string, item string) bool {
+	for _, v := range slice {
+		if v == item {
+			return true
+		}
+	}
+	return false
+}
+
+func containsActimeo(slice []string) bool {
+	for _, v := range slice {
+		if strings.HasPrefix(v, "actimeo=") {
+			return true
+		}
+	}
+	return false
+}
+
 // NodePublishVolume mount the volume
 func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+
+	fmt.Printf("VolumeContext: %+v\n", req.VolumeContext)
+
+	// Get PersistentVolume (PV) name from VolumeId
+	_volumeID := req.GetVolumeId()
+	if _volumeID == "" {
+		return nil, fmt.Errorf("volume ID is empty in NodePublishVolumeRequest")
+	}
+
+	// Extract the correct PV name
+	parts := strings.Split(_volumeID, "/")
+	pvName := parts[len(parts)-1] // Take the last segment
+
+	// Create Kubernetes client
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes config: %v", err)
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %v", err)
+	}
+
+	// Get PersistentVolume (PV)
+	pv, err := clientset.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PV %s: %v", pvName, err)
+	}
+
+	// Extract PVC Name and Namespace from PV spec
+	if pv.Spec.ClaimRef == nil {
+		return nil, fmt.Errorf("PVC reference not found in PV %s", pvName)
+	}
+
+	pvcName := pv.Spec.ClaimRef.Name
+	pvcNamespace := pv.Spec.ClaimRef.Namespace
+
+	// Get PVC metadata (labels)
+	pvc, err := clientset.CoreV1().PersistentVolumeClaims(pvcNamespace).Get(ctx, pvcName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PVC %s: %v", pvcName, err)
+	}
+
+	// Extract labels
+	labels := pvc.Labels
+	fmt.Printf("PVC Labels: %v\n", labels)
+
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "Volume capability missing in request")
 	}
@@ -69,6 +139,27 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	mountOptions := req.GetVolumeCapability().GetMount().GetMountFlags()
 	if req.GetReadonly() {
 		mountOptions = append(mountOptions, "ro")
+	}
+
+	if val, exists := labels["noac"]; exists && val == "true" {
+		if !contains(mountOptions, "noac") {
+			mountOptions = append(mountOptions, "noac")
+		} else {
+			fmt.Printf("Info: noac is already set\n")
+		}
+	}
+
+	if val, exists := labels["actimeo"]; exists {
+		if actimeoVal, err := strconv.Atoi(val); err == nil {
+			option := fmt.Sprintf("actimeo=%d", actimeoVal)
+			if !containsActimeo(mountOptions) {
+				mountOptions = append(mountOptions, option)
+			} else {
+				fmt.Printf("Info: actimeo is already set\n")
+			}
+		} else {
+			fmt.Printf("Warning: Invalid 'actimeo' value '%s', must be an integer\n", val)
+		}
 	}
 
 	s := req.GetVolumeContext()[paramServer]

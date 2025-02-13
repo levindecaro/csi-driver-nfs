@@ -34,12 +34,9 @@ var (
 	driverName = flag.String("drivername", nfs.DefaultDriverName, "name of the driver")
 )
 
-func init() {
-	_ = flag.Set("logtostderr", "true")
-}
-
 func main() {
 	klog.InitFlags(nil)
+	_ = flag.Set("logtostderr", "true")
 	flag.Parse()
 	if *nodeID == "" {
 		klog.Warning("nodeid is empty")
