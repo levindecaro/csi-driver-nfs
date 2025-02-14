@@ -21,16 +21,17 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
-        "strconv"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"syscall"
+
 	"k8s.io/klog/v2"
-        "syscall"
 )
 
 // ControllerServer controller server setting
@@ -55,10 +56,10 @@ type nfsVolume struct {
 	subDir string
 	// size of volume
 	size int64
-        // Directory Group Owner
-        gid string
-        // Directory Uid Owner
-        uid string
+	// Directory Group Owner
+	gid string
+	// Directory Uid Owner
+	uid string
 }
 
 // Ordering of elements in the CSI volume id.
@@ -106,24 +107,24 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	// Create subdirectory under base-dir
 	// TODO: revisit permissions
-        mask := syscall.Umask(0)
-        defer syscall.Umask(mask)
+	mask := syscall.Umask(0)
+	defer syscall.Umask(mask)
 	internalVolumePath := cs.getInternalVolumePath(nfsVol)
-        klog.V(2).Infof("Creating subdirectory at %v", internalVolumePath)
+	klog.V(2).Infof("Creating subdirectory at %v", internalVolumePath)
 	if err = os.Mkdir(internalVolumePath, 0770); err != nil && !os.IsExist(err) {
 		return nil, status.Errorf(codes.Internal, "failed to make subdirectory: %v", err.Error())
 	}
 
-        uid, _ := strconv.Atoi(nfsVol.uid)
-        gid, _ := strconv.Atoi(nfsVol.gid)
+	uid, _ := strconv.Atoi(nfsVol.uid)
+	gid, _ := strconv.Atoi(nfsVol.gid)
 
-        if uid != 0 && gid != 0 {
-          klog.V(2).Infof("Changing subdirectory ownership at %v", internalVolumePath)
-          err = syscall.Chown(internalVolumePath, uid, gid)
-          if err != nil {
-            return nil, status.Errorf(codes.Internal, "failed to chown subdirectory: %v", err.Error())
-          }
-        }
+	if uid != 0 && gid != 0 {
+		klog.V(2).Infof("Changing subdirectory ownership at %v", internalVolumePath)
+		err = syscall.Chown(internalVolumePath, uid, gid)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to chown subdirectory: %v", err.Error())
+		}
+	}
 
 	return &csi.CreateVolumeResponse{Volume: cs.nfsVolToCSI(nfsVol)}, nil
 }
@@ -216,12 +217,12 @@ func (cs *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 
 func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
 	volID := req.GetVolumeId()
-        volSize := req.GetCapacityRange().GetRequiredBytes()
+	volSize := req.GetCapacityRange().GetRequiredBytes()
 
 	if len(volID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "ControllerExpandVolume volume ID missing in request")
 	}
-    	return &csi.ControllerExpandVolumeResponse{CapacityBytes: volSize, NodeExpansionRequired:  false}, nil
+	return &csi.ControllerExpandVolumeResponse{CapacityBytes: volSize, NodeExpansionRequired: false}, nil
 
 }
 
@@ -274,7 +275,7 @@ func (cs *ControllerServer) internalMount(ctx context.Context, vol *nfsVolume, v
 	}
 
 	klog.V(4).Infof("internally mounting %v:%v at %v", vol.server, sharePath, targetPath)
-	_, err := cs.Driver.ns.NodePublishVolume(ctx, &csi.NodePublishVolumeRequest{
+	_, err := cs.Driver.ns.NodePublishNewVolume(ctx, &csi.NodePublishVolumeRequest{
 		TargetPath: targetPath,
 		VolumeContext: map[string]string{
 			paramServer: vol.server,
@@ -304,8 +305,8 @@ func (cs *ControllerServer) newNFSVolume(name string, size int64, params map[str
 	var (
 		server  string
 		baseDir string
-                gid string
-                uid string
+		gid     string
+		uid     string
 	)
 
 	// Validate parameters (case-insensitive).
@@ -316,10 +317,10 @@ func (cs *ControllerServer) newNFSVolume(name string, size int64, params map[str
 			server = v
 		case paramShare:
 			baseDir = v
-                case paramUid:
-                        uid = v
-                case paramGid:
-                        gid = v
+		case paramUid:
+			uid = v
+		case paramGid:
+			gid = v
 		default:
 			return nil, fmt.Errorf("invalid parameter %q", k)
 		}
@@ -332,20 +333,20 @@ func (cs *ControllerServer) newNFSVolume(name string, size int64, params map[str
 	if baseDir == "" {
 		return nil, fmt.Errorf("%v is a required parameter", paramShare)
 	}
-        if uid == "" {
-                uid = "0"
-        }
-        if gid == "" {
-                gid = "0"
-        }
+	if uid == "" {
+		uid = "0"
+	}
+	if gid == "" {
+		gid = "0"
+	}
 
 	vol := &nfsVolume{
 		server:  server,
 		baseDir: baseDir,
 		subDir:  name,
 		size:    size,
-                uid:     uid,
-                gid:     gid,
+		uid:     uid,
+		gid:     gid,
 	}
 	vol.id = cs.getVolumeIDFromNfsVol(vol)
 
@@ -363,8 +364,8 @@ func (cs *ControllerServer) getInternalMountPath(vol *nfsVolume) string {
 
 // Get internal path where the volume is created
 // The reason why the internal path is "workingDir/subDir/subDir" is because:
-//   * the semantic is actually "workingDir/volId/subDir" and volId == subDir.
-//   * we need a mount directory per volId because you can have multiple
+//   - the semantic is actually "workingDir/volId/subDir" and volId == subDir.
+//   - we need a mount directory per volId because you can have multiple
 //     CreateVolume calls in parallel and they may use the same underlying share.
 //     Instead of refcounting how many CreateVolume calls are using the same
 //     share, it's simpler to just do a mount per request.
